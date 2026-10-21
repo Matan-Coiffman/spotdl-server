@@ -129,6 +129,19 @@ For a list of all **options** use ```spotdl -h```
 
 ### Refer to [Usage](usage.md) for more info.
 
+## Self-hosted Web Server
+
+`spotdl-server` runs spotDL as a small web app you can host for yourself and a few friends:
+paste a Spotify link or search for a song, watch the download progress live, and grab the files
+or a ZIP. It can be password-protected and ships as a Docker image, with a Compose setup that
+includes optional automatic HTTPS.
+
+```bash
+docker run -d -p 127.0.0.1:8800:8800 -v spotdl-data:/data ghcr.io/matan-coiffman/spotdl-server:latest
+```
+
+See the [web server guide](server.md) for sharing it, HTTPS, configuration and the API.
+
 ## Music Sourcing and Audio Quality
 
 spotDL uses YouTube as a source for music downloads. This method is used to avoid any issues related to downloading music from Spotify.

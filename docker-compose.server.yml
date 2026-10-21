@@ -1,0 +1,65 @@
+# spotDL web server: the web UI and its download backend.
+#
+#   cp .env.example .env        # then set SPOTDL_PASSWORD
+#   docker compose -f docker-compose.server.yml up -d
+#
+# Open http://<this machine>:8800. For HTTPS on your own domain, set SPOTDL_DOMAIN
+# and SPOTDL_BIND=127.0.0.1 in .env and add `--profile https`. See docs/server.md.
+#
+# Update with `docker compose -f docker-compose.server.yml pull` and `up -d` again.
+
+services:
+  spotdl:
+    image: ghcr.io/matan-coiffman/spotdl-server:latest
+    restart: unless-stopped
+    ports:
+      - "${SPOTDL_BIND:-0.0.0.0}:${SPOTDL_PUBLISH_PORT:-8800}:8800"
+    environment:
+      SPOTDL_PASSWORD: ${SPOTDL_PASSWORD:?Set SPOTDL_PASSWORD in .env}
+      SPOTDL_FORMAT: ${SPOTDL_FORMAT:-mp3}
+      SPOTDL_BITRATE: ${SPOTDL_BITRATE:-auto}
+      SPOTDL_RETENTION_HOURS: ${SPOTDL_RETENTION_HOURS:-24}
+      SPOTDL_MAX_CONCURRENT_JOBS: ${SPOTDL_MAX_CONCURRENT_JOBS:-2}
+      SPOTDL_THREADS: ${SPOTDL_THREADS:-4}
+      SPOTDL_MAX_TRACKS: ${SPOTDL_MAX_TRACKS:-500}
+      SPOTDL_COOKIE_FILE: ${SPOTDL_COOKIE_FILE:-}
+      SPOTDL_PROXY: ${SPOTDL_PROXY:-}
+      SPOTDL_LOG_LEVEL: ${SPOTDL_LOG_LEVEL:-INFO}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - spotdl-data:/data
+      # YouTube cookies, if YouTube blocks your server (set SPOTDL_COOKIE_FILE=/cookies.txt):
+      # - ./cookies.txt:/cookies.txt:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8800/api/health', timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Optional: automatic HTTPS with Let's Encrypt. Needs SPOTDL_DOMAIN pointing at this
+  # machine and ports 80 and 443 open.
+  caddy:
+    image: caddy:2.10.2
+    profiles: ["https"]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${SPOTDL_DOMAIN:-} --to spotdl:8800
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      spotdl:
+        condition: service_healthy
+
+volumes:
+  spotdl-data:
+  caddy-data:
+  caddy-config:

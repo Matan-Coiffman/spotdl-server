@@ -4,3 +4,8 @@
 docs
 scripts
 tests
+.venv
+.claude
+**/__pycache__
+dist
+build

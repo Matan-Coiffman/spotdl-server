@@ -8,6 +8,46 @@
 
 <div align="center">
 
+# spotDL Server
+
+A self-hosted web app for [spotDL](https://github.com/spotDL/spotify-downloader). Paste a Spotify
+link or search for a song, watch it download, and get tagged audio files with album art and
+lyrics, one by one or as a ZIP.
+
+![spotDL Server: an album downloaded, in a dark library-style UI](docs/images/server-ui.webp)
+
+</div>
+
+## Run it
+
+You only need [Docker](https://docs.docker.com/get-docker/). Images are built for Intel/AMD and
+ARM (Apple Silicon, Raspberry Pi 4/5).
+
+```bash
+docker run -d --name spotdl --restart unless-stopped \
+  -p 127.0.0.1:8800:8800 -v spotdl-data:/data \
+  ghcr.io/matan-coiffman/spotdl-server:latest
+```
+
+Then open <http://localhost:8800>.
+
+To share it with other devices or people, run it with a password using Docker Compose:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/Matan-Coiffman/spotdl-server/main/docker-compose.server.yml
+curl -fsSL -o .env https://raw.githubusercontent.com/Matan-Coiffman/spotdl-server/main/.env.example
+# set SPOTDL_PASSWORD in .env, then:
+docker compose -f docker-compose.server.yml up -d
+```
+
+The [server guide](docs/server.md) covers HTTPS on a VPS, updating, configuration and the API.
+This repository is a fork of spotDL, with the server in [`spotdl/server`](spotdl/server); the
+original spotDL README follows.
+
+______________________________________________________________________
+
+<div align="center">
+
 # spotDL v4
 
 **spotDL** finds songs from Spotify playlists on YouTube and downloads them - along with album art, lyrics and metadata.
@@ -152,6 +192,19 @@ For a list of all **options** use ```spotdl -h```
 - `meta`: Updates metadata for the provided song files.
 
 </details>
+
+## Self-hosted Web Server
+
+`spotdl-server` runs spotDL as a small web app you can host for yourself and a few friends:
+paste a Spotify link or search for a song, watch the download progress live, and grab the files
+or a ZIP. It can be password-protected and ships as a Docker image, with a Compose setup that
+includes optional automatic HTTPS.
+
+```bash
+docker run -d -p 127.0.0.1:8800:8800 -v spotdl-data:/data ghcr.io/matan-coiffman/spotdl-server:latest
+```
+
+See the [web server guide](docs/server.md) for sharing it, HTTPS, configuration and the API.
 
 ## Music Sourcing and Audio Quality
 
