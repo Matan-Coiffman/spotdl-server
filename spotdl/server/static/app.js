@@ -22,10 +22,8 @@
   const LOSSLESS = new Set(["flac", "wav"]);
   const LINK =
     /^(https?:\/\/|spotify:(track|album|playlist|artist):|(www\.|m\.)?(open\.spotify\.com|spotify\.link|music\.youtube\.com|youtube\.com|youtu\.be)\/)/i;
-  const SEARCH_DELAY = 450;
-  const DEFAULT_TINT = "#535353";
+  const SEARCH_DELAY = 400;
 
-  const narrow = window.matchMedia("(max-width: 768px)");
   const byId = (id) => document.getElementById(id);
   const ui = {
     app: byId("app"),
@@ -37,41 +35,22 @@
     query: byId("query"),
     clear: byId("clear"),
     submit: byId("submit"),
-    home: byId("home-button"),
     format: byId("format"),
     bitrate: byId("bitrate"),
-    connection: byId("connection"),
-    lock: byId("lock"),
-    filters: byId("filters"),
-    jobs: byId("jobs"),
-    libraryEmpty: byId("library-empty"),
-    start: byId("start-button"),
-    colophon: byId("colophon"),
-    main: byId("main"),
-    homeView: byId("home-view"),
-    searchView: byId("search-view"),
-    searchBack: byId("search-back"),
+    panel: byId("results-panel"),
     searchNote: byId("search-note"),
     results: byId("results"),
-    jobView: byId("job-view"),
-    jobBack: byId("job-back"),
-    jobCover: byId("job-cover"),
-    jobTitle: byId("job-title"),
-    jobMeta: byId("job-meta"),
-    jobDownload: byId("job-download"),
-    jobRing: byId("job-ring"),
-    jobRingLabel: byId("job-ring-label"),
-    jobRetry: byId("job-retry"),
-    jobRetryLabel: byId("job-retry-label"),
-    jobRemove: byId("job-remove"),
-    jobRemoveLabel: byId("job-remove-label"),
-    jobStatus: byId("job-status"),
-    tracksHead: byId("tracks-head"),
-    tracks: byId("tracks"),
+    filters: byId("filters"),
+    jobs: byId("jobs"),
+    empty: byId("empty"),
+    filterEmpty: byId("filter-empty"),
+    connection: byId("connection"),
+    lock: byId("lock"),
+    colophon: byId("colophon"),
     toast: byId("toast"),
   };
   const templates = {
-    item: byId("item-template"),
+    job: byId("job-template"),
     track: byId("track-template"),
     result: byId("result-template"),
   };
@@ -79,19 +58,17 @@
   const state = {
     session: null,
     jobs: new Map(),
-    items: new Map(),
-    selected: null,
+    cards: new Map(),
+    expanded: new Set(),
     filter: null,
-    rows: [],
-    rowsJob: null,
-    coverKey: null,
+    results: [],
+    active: -1,
+    searchToken: 0,
+    searchTimer: null,
     colors: new Map(),
+    toastTimer: null,
     source: null,
     retryTimer: null,
-    searchTimer: null,
-    searchToken: 0,
-    toastTimer: null,
-    booted: false,
   };
 
   // Server
@@ -161,14 +138,11 @@
 
   // Formatting
 
-  const pad = (number, width = 2) => String(number).padStart(width, "0");
+  const pad = (number) => String(number).padStart(2, "0");
   const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
   function formatDuration(seconds) {
-    if (!seconds) {
-      return "";
-    }
-    return `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`;
+    return seconds ? `${Math.floor(seconds / 60)}:${pad(seconds % 60)}` : "";
   }
 
   function formatHours(hours) {
@@ -176,13 +150,6 @@
       return `${hours / 24} days`;
     }
     return plural(hours, "hour");
-  }
-
-  function formatSize(bytes) {
-    if (bytes >= 1e9) {
-      return `${(bytes / 1e9).toFixed(1)} GB`;
-    }
-    return `${Math.max(0.1, bytes / 1e6).toFixed(1)} MB`;
   }
 
   function formatQuality(job) {
@@ -195,84 +162,60 @@
     let done = 0;
     let failed = 0;
     let progress = 0;
-    let size = 0;
     for (const track of tracks) {
       done += track.status === "done" ? 1 : 0;
       failed += track.status === "error" ? 1 : 0;
       progress += track.progress;
-      size += track.size || 0;
     }
-    return { total, done, failed, size, progress: total ? Math.round(progress / total) : 0 };
+    return { total, done, failed, progress: total ? Math.round(progress / total) : 0 };
   }
 
   function kindOf(job) {
     return KINDS[job.kind] || KINDS.track;
   }
 
-  // One line saying where a download is at, and its tone
-  function statusOf(job) {
+  function subtitleOf(job) {
+    if (!job.tracks.length) {
+      if (job.status === "resolving") {
+        return "Looking it up on Spotify";
+      }
+      return `${job.query.includes("://") ? `${kindOf(job)} link` : "Search"} • ${formatQuality(job)}`;
+    }
+    const parts = [kindOf(job)];
+    if (job.subtitle) {
+      parts.push(job.subtitle);
+    }
+    if (job.stats.total > 1) {
+      parts.push(plural(job.stats.total, "song"));
+    }
+    parts.push(formatQuality(job));
+    return parts.join(" • ");
+  }
+
+  // The short status shown beside a download's buttons
+  function stateOf(job) {
     const stats = job.stats;
     switch (job.status) {
       case "resolving":
-        return ["Looking it up on Spotify…", ""];
+        return "Looking up…";
       case "queued":
-        return ["Waiting for a free slot…", ""];
+        return "Waiting…";
       case "running":
         if (stats.total === 1) {
-          return [`${STEPS[job.tracks[0].message] || "Downloading"}…`, "green"];
+          return `${STEPS[job.tracks[0].message] || "Downloading"}…`;
         }
-        return [`Downloading ${stats.done} of ${plural(stats.total, "song")}`, "green"];
+        return `${stats.done} of ${stats.total}`;
       case "done":
-        if (stats.failed) {
-          return [`${stats.done} of ${plural(stats.total, "song")} downloaded`, ""];
-        }
-        return ["Downloaded", ""];
-      case "failed":
-        return [job.error || "Couldn't download this", "red"];
+        return stats.failed ? `${stats.failed} failed` : "";
       default:
-        return ["Cancelled", ""];
+        return "";
     }
   }
 
-  function subtitleOf(job) {
-    if (!job.tracks.length) {
-      return job.status === "resolving" ? "Looking up…" : kindOf(job);
-    }
-    if (job.subtitle) {
-      return `${kindOf(job)} • ${job.subtitle}`;
-    }
-    return `${kindOf(job)} • ${plural(job.stats.total, "song")}`;
-  }
-
-  // Small helpers
+  // Helpers
 
   function clone(template) {
     return template.content.firstElementChild.cloneNode(true);
-  }
-
-  function coverImage(url) {
-    const image = new Image();
-    image.alt = "";
-    image.loading = "lazy";
-    image.decoding = "async";
-    image.referrerPolicy = "no-referrer";
-    image.addEventListener("error", () => image.remove(), { once: true });
-    image.src = url;
-    return image;
-  }
-
-  function fillCover(element, url, kind) {
-    const key = `${url || ""}|${kind}`;
-    if (element.dataset.key === key) {
-      return;
-    }
-    element.dataset.key = key;
-    element.classList.toggle("round-art", kind === "artist");
-    if (url) {
-      element.replaceChildren(coverImage(url));
-    } else {
-      element.replaceChildren(icon("i-note"));
-    }
   }
 
   function icon(name) {
@@ -282,6 +225,25 @@
     use.setAttribute("href", `#${name}`);
     svg.append(use);
     return svg;
+  }
+
+  function coverImage(url) {
+    const image = new Image();
+    image.alt = "";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => image.replaceWith(icon("i-note")), { once: true });
+    image.src = url;
+    return image;
+  }
+
+  function fillCover(element, url) {
+    const key = url || "";
+    if (element.dataset.key === key && element.firstChild) {
+      return;
+    }
+    element.dataset.key = key;
+    element.replaceChildren(url ? coverImage(url) : icon("i-note"));
   }
 
   function setBusy(button, busy) {
@@ -299,7 +261,7 @@
     }, isError ? 6000 : 3000);
   }
 
-  // The header tints to the cover, like an album page
+  // Rows wash in their cover's color, sampled once per cover
   function tintFor(url) {
     if (!url) {
       return Promise.resolve(null);
@@ -348,7 +310,7 @@
     });
   }
 
-  // Keep the cover's hue, but dark and calm enough for white text
+  // Keep the cover's hue, calm enough to sit behind white text
   function toTint(red, green, blue) {
     const r = red / 255;
     const g = green / 255;
@@ -371,26 +333,11 @@
       hue *= 60;
     }
     const s = Math.min(0.6, Math.max(0.12, saturation * 1.2));
-    const l = Math.min(0.36, Math.max(0.22, light * 0.7));
+    const l = Math.min(0.4, Math.max(0.24, light * 0.75));
     return `hsl(${Math.round(hue)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%)`;
   }
 
-  // Views
-
-  function setView(view) {
-    document.body.dataset.view = view;
-    ui.homeView.hidden = view !== "home";
-    ui.searchView.hidden = view !== "search";
-    ui.jobView.hidden = view !== "job";
-  }
-
-  function goHome() {
-    state.selected = null;
-    markSelected();
-    setView("home");
-  }
-
-  // Your Downloads
+  // Downloads
 
   function matchesFilter(job) {
     switch (state.filter) {
@@ -405,162 +352,131 @@
     }
   }
 
-  function applyFilter() {
-    for (const [id, item] of state.items) {
-      item.root.hidden = !matchesFilter(state.jobs.get(id));
+  function updateEmpty() {
+    const empty = state.jobs.size === 0;
+    document.body.dataset.empty = String(empty);
+    ui.empty.hidden = !empty;
+    ui.filters.hidden = empty;
+
+    let visible = 0;
+    for (const [id, card] of state.cards) {
+      const show = matchesFilter(state.jobs.get(id));
+      card.root.hidden = !show;
+      visible += show ? 1 : 0;
     }
+    ui.filterEmpty.hidden = empty || visible > 0;
   }
 
-  function markSelected() {
-    for (const [id, item] of state.items) {
-      item.button.setAttribute("aria-current", String(id === state.selected));
-    }
-  }
-
-  function createItem(job) {
-    const root = clone(templates.item);
-    const item = {
+  function createCard(job) {
+    const root = clone(templates.job);
+    const find = (selector) => root.querySelector(selector);
+    const card = {
       root,
-      button: root.querySelector(".item-button"),
-      cover: root.querySelector(".item-cover"),
-      title: root.querySelector(".item-title"),
-      sub: root.querySelector(".item-sub"),
-      bar: root.querySelector(".item-bar"),
+      cover: find(".job-cover"),
+      title: find(".job-title"),
+      sub: find(".job-sub"),
+      progress: find(".progress-fill"),
+      percent: find(".job-percent"),
+      error: find(".job-error"),
+      state: find(".job-state"),
+      save: find(".job-save"),
+      saveLabel: find(".job-save span"),
+      retry: find(".job-retry"),
+      retryLabel: find(".job-retry span"),
+      toggle: find(".job-toggle"),
+      remove: find(".job-remove"),
+      removeLabel: find(".job-remove .confirm-label"),
+      tracks: find(".tracks"),
+      rows: [],
+      tintKey: null,
     };
-    item.button.addEventListener("click", () => selectJob(job.id));
-    return item;
+
+    root.dataset.id = job.id;
+    card.tracks.id = `tracks-${job.id}`;
+    card.toggle.setAttribute("aria-controls", card.tracks.id);
+    card.toggle.addEventListener("click", () => toggleTracks(job.id));
+    card.retry.addEventListener("click", () => retryJob(job.id));
+    card.remove.addEventListener("click", () => removeClicked(job.id));
+    return card;
   }
 
-  function insertItem(item, job) {
+  function insertCard(card, job) {
     for (const other of ui.jobs.children) {
       const otherJob = state.jobs.get(other.dataset.id);
       if (otherJob && otherJob.created_at < job.created_at) {
-        ui.jobs.insertBefore(item.root, other);
+        ui.jobs.insertBefore(card.root, other);
         return;
       }
     }
-    ui.jobs.append(item.root);
+    ui.jobs.append(card.root);
   }
 
-  function renderItem(item, job) {
-    item.root.dataset.id = job.id;
-    item.root.dataset.status = job.status;
-    fillCover(item.cover, job.covers[0], job.kind);
-
-    const title = job.tracks.length ? job.title || job.query : job.query;
-    item.title.textContent = title;
-    item.button.title = title;
-
-    const [status] = statusOf(job);
-    item.sub.textContent =
-      job.status === "running" || job.status === "failed" ? status : subtitleOf(job);
-    item.bar.style.setProperty("--p", job.stats.progress);
-    item.button.setAttribute("aria-current", String(job.id === state.selected));
-  }
-
-  function updateLibraryEmpty() {
-    ui.libraryEmpty.hidden = state.jobs.size > 0;
-    ui.filters.hidden = state.jobs.size === 0;
-  }
-
-  // Download page
-
-  function selectJob(id) {
-    const job = state.jobs.get(id);
-    if (!job) {
-      return;
-    }
-    state.selected = id;
-    markSelected();
-    renderJob(job, { rebuild: true });
-    setView("job");
-    ui.main.scrollTop = 0;
-    if (narrow.matches) {
-      window.scrollTo(0, 0);
-    }
-  }
-
-  function renderHeader(job) {
+  function renderCard(card, job) {
     const stats = job.stats;
+    const active = ACTIVE.has(job.status);
     const empty = !job.tracks.length;
-    ui.jobView.dataset.empty = String(empty);
+
+    card.root.dataset.status = job.status;
+    card.root.dataset.empty = String(empty);
 
     const cover = job.covers[0] || null;
-    const coverKey = `${job.id}|${cover}`;
-    if (state.coverKey !== coverKey) {
-      state.coverKey = coverKey;
-      fillCover(ui.jobCover, cover, job.kind);
-      ui.jobView.style.setProperty("--tint", DEFAULT_TINT);
+    fillCover(card.cover, cover);
+    card.cover.classList.toggle("round-art", job.kind === "artist");
+    if (card.tintKey !== cover) {
+      card.tintKey = cover;
       tintFor(cover).then((color) => {
-        if (state.coverKey === coverKey) {
-          ui.jobView.style.setProperty("--tint", color || DEFAULT_TINT);
+        if (card.tintKey === cover && color) {
+          card.root.style.setProperty("--tint", color);
         }
       });
     }
 
     const title = empty ? job.query : job.title || job.query;
-    ui.jobTitle.textContent = title;
-    ui.jobTitle.dataset.length = title.length > 40 ? "xlong" : title.length > 18 ? "long" : "";
+    card.title.textContent = title;
+    card.title.title = title;
+    card.sub.textContent = subtitleOf(job);
 
-    const meta = [empty ? (job.query.includes("://") ? `${kindOf(job)} link` : "Search") : kindOf(job)];
-    if (job.subtitle) {
-      const who = document.createElement("strong");
-      who.textContent = job.subtitle;
-      meta.push(who);
-    }
-    if (stats.total > 1) {
-      meta.push(plural(stats.total, "song"));
-    }
-    meta.push(formatQuality(job));
-    if (stats.size) {
-      meta.push(formatSize(stats.size));
-    }
-    const parts = [];
-    meta.forEach((part, index) => {
-      if (index) {
-        parts.push(" • ");
-      }
-      parts.push(part);
-    });
-    ui.jobMeta.replaceChildren(...parts);
-  }
+    card.progress.style.setProperty("--p", stats.progress);
+    card.percent.textContent = `${stats.progress}%`;
+    card.error.textContent = job.status === "failed" ? job.error || "Couldn't download this" : "";
 
-  function renderActions(job) {
-    const stats = job.stats;
-    const active = ACTIVE.has(job.status);
+    const label = stateOf(job);
+    card.state.replaceChildren();
+    if (job.status === "resolving" || job.status === "queued") {
+      const spinner = document.createElement("span");
+      spinner.className = "spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      card.state.append(spinner);
+    }
+    if (label) {
+      card.state.append(label);
+    }
+
     const finished = job.tracks.find((track) => track.status === "done");
-
-    ui.jobDownload.hidden = active || !finished;
+    card.save.hidden = active || !finished;
     if (finished) {
       const single = stats.total === 1;
-      ui.jobDownload.href = single
+      card.save.href = single
         ? `/api/jobs/${job.id}/tracks/${finished.id}/file`
         : `/api/jobs/${job.id}/archive`;
-      const label = single ? `Download ${job.title}` : `Download ${plural(stats.done, "song")} as a ZIP`;
-      ui.jobDownload.setAttribute("aria-label", label);
-      ui.jobDownload.title = label;
+      card.saveLabel.textContent = single ? "Save" : "Save ZIP";
+      card.save.title = single ? `Save ${title}` : `Save ${plural(stats.done, "song")} as a ZIP`;
     }
 
-    ui.jobRing.hidden = !active;
-    const waiting = job.status !== "running";
-    ui.jobRing.classList.toggle("is-waiting", waiting);
-    ui.jobRing.style.setProperty("--p", stats.progress);
-    ui.jobRing.setAttribute("aria-valuenow", String(stats.progress));
-    ui.jobRingLabel.textContent = waiting ? "" : `${stats.progress}%`;
+    card.retry.hidden = active || !(stats.failed > 0 || (job.status === "failed" && !stats.total));
+    card.retryLabel.textContent = stats.failed > 0 && stats.total > 1 ? "Retry failed" : "Try again";
 
-    ui.jobRetry.hidden = active || !(stats.failed > 0 || (job.status === "failed" && !stats.total));
-    ui.jobRetryLabel.textContent =
-      stats.failed > 0 && stats.total > 1 ? `Retry ${stats.failed} failed` : "Try again";
+    card.toggle.hidden = stats.total < 2;
+    const open = state.expanded.has(job.id);
+    card.toggle.setAttribute("aria-expanded", String(open));
+    card.toggle.setAttribute("aria-label", open ? "Hide songs" : "Show songs");
+    card.toggle.title = open ? "Hide songs" : "Show songs";
 
-    if (!ui.jobRemove.dataset.confirm) {
-      const label = active ? "Cancel download" : "Remove download";
-      ui.jobRemove.setAttribute("aria-label", label);
-      ui.jobRemove.title = label;
+    if (!card.remove.dataset.confirm) {
+      const removeLabel = active ? "Cancel download" : "Remove";
+      card.remove.setAttribute("aria-label", removeLabel);
+      card.remove.title = removeLabel;
     }
-
-    const [status, tone] = statusOf(job);
-    ui.jobStatus.textContent = status;
-    ui.jobStatus.classList.toggle("is-error", tone === "red");
   }
 
   function createRow() {
@@ -568,13 +484,10 @@
     return {
       root,
       number: root.querySelector(".track-number"),
-      cover: root.querySelector(".track-cover"),
       title: root.querySelector(".track-title"),
       by: root.querySelector(".track-by"),
-      album: root.querySelector(".track-album"),
       state: root.querySelector(".track-state"),
-      bar: root.querySelector(".mini-bar"),
-      download: root.querySelector(".track-download"),
+      save: root.querySelector(".track-save"),
     };
   }
 
@@ -583,137 +496,117 @@
     row.number.textContent = String(track.id + 1);
     row.title.textContent = track.title;
     row.title.title = track.title;
-    row.by.textContent = track.status === "error" ? track.error || "Couldn't download this song" : track.artists.join(", ");
-    row.album.textContent = track.album || "";
-    if (job.kind !== "album" && job.kind !== "track") {
-      fillCover(row.cover, track.cover, "track");
-    }
+    row.by.textContent =
+      track.status === "error" ? track.error || "Couldn't download this song" : track.artists.join(", ");
 
     if (track.status === "active") {
-      row.state.textContent = STEPS[track.message] || "Starting";
+      row.state.textContent = `${STEPS[track.message] || "Starting"} ${track.progress}%`;
     } else if (track.status === "error") {
       row.state.textContent = "Failed";
     } else {
       row.state.textContent = formatDuration(track.duration);
     }
-    row.bar.style.setProperty("--p", track.progress);
 
     const done = track.status === "done";
-    row.download.hidden = !done;
+    row.save.hidden = !done;
     if (done) {
-      row.download.href = `/api/jobs/${job.id}/tracks/${track.id}/file`;
-      row.download.setAttribute("aria-label", `Download ${track.title}`);
-      row.download.title = `Download ${track.title}`;
+      row.save.href = `/api/jobs/${job.id}/tracks/${track.id}/file`;
+      row.save.setAttribute("aria-label", `Save ${track.title}`);
+      row.save.title = "Save";
     }
   }
 
-  function renderTracks(job, rebuild) {
-    const covers = job.kind !== "album" && job.kind !== "track";
-    const album = job.kind === "playlist" || job.kind === "artist" || job.kind === "user";
-    for (const element of [ui.tracks, ui.tracksHead]) {
-      element.classList.toggle("with-covers", covers);
-      element.classList.toggle("with-album", album);
-    }
-    ui.tracksHead.hidden = job.tracks.length === 0;
-
-    if (rebuild || state.rowsJob !== job.id) {
-      state.rows = [];
-      state.rowsJob = job.id;
-      ui.tracks.replaceChildren();
-    }
-
-    while (state.rows.length > job.tracks.length) {
-      state.rows.pop().root.remove();
+  function renderTracks(card, job) {
+    while (card.rows.length > job.tracks.length) {
+      card.rows.pop().root.remove();
     }
     job.tracks.forEach((track, index) => {
-      let row = state.rows[index];
+      let row = card.rows[index];
       if (!row) {
         row = createRow();
-        state.rows.push(row);
-        ui.tracks.append(row.root);
+        card.rows.push(row);
+        card.tracks.append(row.root);
       }
       renderRow(row, job, track);
     });
   }
 
-  function renderJob(job, { rebuild = false } = {}) {
-    renderHeader(job);
-    renderActions(job);
-    renderTracks(job, rebuild);
+  function toggleTracks(id) {
+    const card = state.cards.get(id);
+    const job = state.jobs.get(id);
+    if (!card || !job) {
+      return;
+    }
+    if (state.expanded.has(id)) {
+      state.expanded.delete(id);
+    } else {
+      state.expanded.add(id);
+      renderTracks(card, job);
+    }
+    card.tracks.hidden = !state.expanded.has(id);
+    renderCard(card, job);
   }
 
-  // Keeping the state in sync
-
-  function upsertJob(job) {
+  function upsertJob(job, { arriving = false } = {}) {
     const previous = state.jobs.get(job.id);
     job.stats = computeStats(job.tracks);
     state.jobs.set(job.id, job);
 
-    let item = state.items.get(job.id);
-    if (!item) {
-      item = createItem(job);
-      state.items.set(job.id, item);
-      insertItem(item, job);
+    let card = state.cards.get(job.id);
+    if (!card) {
+      card = createCard(job);
+      state.cards.set(job.id, card);
+      insertCard(card, job);
+      if (arriving) {
+        card.root.classList.add("is-new");
+        card.root.addEventListener("animationend", () => card.root.classList.remove("is-new"), {
+          once: true,
+        });
+      }
     }
-    renderItem(item, job);
-    item.root.hidden = !matchesFilter(job);
-
-    if (state.selected === job.id) {
-      renderJob(job);
+    renderCard(card, job);
+    if (state.expanded.has(job.id)) {
+      renderTracks(card, job);
     }
 
     if (previous && ACTIVE.has(previous.status) && !ACTIVE.has(job.status)) {
       const title = job.title || job.query;
       if (job.status === "done") {
-        toast(`${title} is ready to download`);
+        toast(`${title} is ready to save`);
       } else if (job.status === "failed") {
         toast(`Couldn't download ${title}`, true);
       }
     }
-    updateLibraryEmpty();
+    updateEmpty();
   }
 
   function updateTrack(jobId, track) {
     const job = state.jobs.get(jobId);
-    if (!job) {
+    const card = state.cards.get(jobId);
+    if (!job || !card) {
       return;
     }
     const index = job.tracks.findIndex((existing) => existing.id === track.id);
     if (index < 0) {
       return;
     }
-
     job.tracks[index] = track;
     job.stats = computeStats(job.tracks);
-    renderItem(state.items.get(jobId), job);
-
-    if (state.selected === jobId) {
-      renderHeader(job);
-      renderActions(job);
-      const row = state.rowsJob === jobId ? state.rows[index] : null;
-      if (row) {
-        renderRow(row, job, track);
-      }
+    renderCard(card, job);
+    if (state.expanded.has(jobId) && card.rows[index]) {
+      renderRow(card.rows[index], job, track);
     }
   }
 
   function removeJob(id) {
-    const item = state.items.get(id);
-    if (item) {
-      item.root.remove();
+    const card = state.cards.get(id);
+    if (card) {
+      card.root.remove();
     }
-    state.items.delete(id);
+    state.cards.delete(id);
     state.jobs.delete(id);
-
-    if (state.selected === id) {
-      const next = ui.jobs.querySelector(".library-item:not([hidden])");
-      if (next && !narrow.matches) {
-        selectJob(next.dataset.id);
-      } else {
-        goHome();
-      }
-    }
-    updateLibraryEmpty();
+    state.expanded.delete(id);
+    updateEmpty();
   }
 
   function replaceJobs(jobs) {
@@ -726,82 +619,73 @@
     for (const job of jobs) {
       upsertJob(job);
     }
-
-    // Open the newest download on first load, like resuming where you left off
-    if (!state.booted) {
-      state.booted = true;
-      if (jobs.length && !narrow.matches && document.body.dataset.view === "home") {
-        selectJob(jobs[0].id);
-      }
-    }
-    updateLibraryEmpty();
+    updateEmpty();
   }
 
-  // Actions
+  // Download actions
 
   async function createJob(query) {
     const job = await api("/api/jobs", {
       method: "POST",
       body: JSON.stringify({ query, format: ui.format.value, bitrate: ui.bitrate.value }),
     });
-    upsertJob(job);
+    upsertJob(job, { arriving: true });
     return job;
   }
 
-  async function retryJob() {
-    const id = state.selected;
-    setBusy(ui.jobRetry, true);
+  async function retryJob(id) {
+    const card = state.cards.get(id);
+    setBusy(card.retry, true);
     try {
       upsertJob(await api(`/api/jobs/${id}/retry`, { method: "POST" }));
     } catch (error) {
       toast(error.message, true);
     } finally {
-      setBusy(ui.jobRetry, false);
+      setBusy(card.retry, false);
     }
   }
 
-  function resetRemove() {
-    clearTimeout(ui.jobRemove.confirmTimer);
-    delete ui.jobRemove.dataset.confirm;
+  function resetRemove(card) {
+    clearTimeout(card.remove.confirmTimer);
+    delete card.remove.dataset.confirm;
   }
 
-  async function removeClicked() {
-    const id = state.selected;
+  async function removeClicked(id) {
+    const card = state.cards.get(id);
     const job = state.jobs.get(id);
-    if (!job) {
+    if (!card || !job) {
       return;
     }
 
     // Removing deletes the files, so it takes a second click
-    if (!ui.jobRemove.dataset.confirm) {
+    if (!card.remove.dataset.confirm) {
       const active = ACTIVE.has(job.status);
-      ui.jobRemove.dataset.confirm = "1";
-      ui.jobRemoveLabel.textContent = active ? "Cancel?" : "Remove?";
-      ui.jobRemove.setAttribute("aria-label", active ? "Confirm cancel" : "Confirm remove");
-      ui.jobRemove.confirmTimer = setTimeout(() => {
-        resetRemove();
-        const current = state.jobs.get(state.selected);
+      card.remove.dataset.confirm = "1";
+      card.removeLabel.textContent = active ? "Cancel?" : "Remove?";
+      card.remove.setAttribute("aria-label", active ? "Confirm cancel" : "Confirm remove");
+      card.remove.confirmTimer = setTimeout(() => {
+        resetRemove(card);
+        const current = state.jobs.get(id);
         if (current) {
-          renderActions(current);
+          renderCard(card, current);
         }
       }, 3500);
       return;
     }
 
-    resetRemove();
-    setBusy(ui.jobRemove, true);
+    resetRemove(card);
+    setBusy(card.remove, true);
     try {
       await api(`/api/jobs/${id}`, { method: "DELETE" });
       removeJob(id);
       toast(`Removed ${job.title || job.query}`);
     } catch (error) {
+      setBusy(card.remove, false);
       toast(error.message, true);
-    } finally {
-      setBusy(ui.jobRemove, false);
     }
   }
 
-  // Search: a link starts a download, anything else searches Spotify
+  // Command bar: a link starts a download, anything else searches Spotify
 
   function isLink(text) {
     return LINK.test(text.trim());
@@ -813,46 +697,87 @@
     ui.submit.hidden = !text || !isLink(text);
   }
 
-  function leaveSearch() {
+  function closeResults() {
     state.searchToken += 1;
     clearTimeout(state.searchTimer);
+    state.results = [];
+    state.active = -1;
     ui.results.replaceChildren();
-    if (document.body.dataset.view === "search") {
-      if (state.selected && state.jobs.has(state.selected)) {
-        selectJob(state.selected);
-      } else {
-        goHome();
-      }
+    ui.panel.hidden = true;
+    ui.query.setAttribute("aria-expanded", "false");
+    ui.query.removeAttribute("aria-activedescendant");
+  }
+
+  function openPanel() {
+    ui.panel.hidden = false;
+    ui.query.setAttribute("aria-expanded", "true");
+  }
+
+  function setActive(index) {
+    const rows = ui.results.children;
+    state.active = index;
+    for (let position = 0; position < rows.length; position += 1) {
+      rows[position].setAttribute("aria-selected", String(position === index));
+    }
+    if (index >= 0 && rows[index]) {
+      ui.query.setAttribute("aria-activedescendant", rows[index].id);
+      rows[index].scrollIntoView({ block: "nearest" });
+    } else {
+      ui.query.removeAttribute("aria-activedescendant");
     }
   }
 
   function showSkeleton() {
-    const rows = [0, 1, 2, 3].map(() => {
+    const rows = [0, 1, 2].map(() => {
       const row = document.createElement("li");
       row.className = "result skeleton";
       row.setAttribute("aria-hidden", "true");
       const cover = document.createElement("span");
-      cover.className = "track-cover";
+      cover.className = "result-cover";
       const text = document.createElement("span");
-      text.className = "track-main";
+      text.className = "result-main";
       for (const size of ["long", "short"]) {
-        const bar = document.createElement("span");
-        bar.className = `bar ${size}`;
-        text.append(bar);
+        const line = document.createElement("span");
+        line.className = `bar-line ${size}`;
+        text.append(line);
       }
       row.append(cover, text);
       return row;
     });
     ui.results.replaceChildren(...rows);
+    ui.searchNote.replaceChildren();
+    openPanel();
+  }
+
+  async function downloadResult(index) {
+    const result = state.results[index];
+    const row = ui.results.children[index];
+    if (!result || !row || row.dataset.added) {
+      return;
+    }
+    const button = row.querySelector(".result-download");
+    setBusy(button, true);
+    try {
+      await createJob(result.url);
+      row.dataset.added = "1";
+      button.querySelector("use").setAttribute("href", "#i-check");
+      button.setAttribute("aria-label", `${result.title} added to Downloads`);
+      toast(`Downloading ${result.title}`);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      setBusy(button, false);
+    }
   }
 
   function renderResults(results) {
-    const rows = results.map((result) => {
+    state.results = results;
+    const rows = results.map((result, index) => {
       const row = clone(templates.result);
+      row.id = `result-${index}`;
+
       const cover = row.querySelector(".result-cover");
-      if (result.cover) {
-        cover.append(coverImage(result.cover));
-      }
+      cover.append(result.cover ? coverImage(result.cover) : icon("i-note"));
 
       const title = row.querySelector(".result-title");
       title.textContent = result.title;
@@ -866,43 +791,29 @@
         badge.textContent = "E";
         by.append(badge);
       }
-      by.append(result.artists.join(", "));
-      row.querySelector(".result-album").textContent = result.album || "";
+      by.append([result.artists.join(", "), result.album].filter(Boolean).join(" • "));
       row.querySelector(".result-duration").textContent = formatDuration(result.duration);
 
       const button = row.querySelector(".result-download");
       button.setAttribute("aria-label", `Download ${result.title}`);
       button.title = "Download";
-      button.addEventListener("click", async () => {
-        if (row.dataset.added) {
-          return;
-        }
-        setBusy(button, true);
-        try {
-          await createJob(result.url);
-          row.dataset.added = "1";
-          button.querySelector("use").setAttribute("href", "#i-check");
-          button.setAttribute("aria-label", `${result.title} added to Your Downloads`);
-          button.title = "Added to Your Downloads";
-          toast("Added to Your Downloads");
-        } catch (error) {
-          toast(error.message, true);
-        } finally {
-          setBusy(button, false);
+
+      row.addEventListener("mousemove", () => {
+        if (state.active !== index) {
+          setActive(index);
         }
       });
+      row.addEventListener("click", () => downloadResult(index));
       return row;
     });
     ui.results.replaceChildren(...rows);
+    setActive(rows.length ? 0 : -1);
   }
 
   async function search(text) {
     clearTimeout(state.searchTimer);
     const token = ++state.searchToken;
-    setView("search");
     showSkeleton();
-    ui.searchNote.className = "search-note";
-    ui.searchNote.textContent = "";
 
     try {
       const { results } = await api(`/api/search?q=${encodeURIComponent(text)}`);
@@ -911,19 +822,13 @@
       }
       renderResults(results);
       if (!results.length) {
-        const heading = document.createElement("span");
-        heading.className = "empty-title";
-        heading.textContent = `No results found for “${text}”`;
-        ui.searchNote.className = "search-note is-empty";
-        ui.searchNote.replaceChildren(
-          heading,
-          "Check the spelling, try fewer words, or paste a Spotify link instead.",
-        );
+        const heading = document.createElement("strong");
+        heading.textContent = `No songs found for “${text}”`;
+        ui.searchNote.replaceChildren(heading, "Check the spelling, or paste a Spotify link instead.");
       }
     } catch (error) {
       if (token === state.searchToken) {
         ui.results.replaceChildren();
-        ui.searchNote.className = "search-note";
         ui.searchNote.textContent = error.message;
       }
     }
@@ -933,12 +838,30 @@
     syncEntry();
     clearTimeout(state.searchTimer);
     const text = ui.query.value.trim();
-    if (!text) {
-      leaveSearch();
+    if (!text || isLink(text)) {
+      closeResults();
       return;
     }
-    if (!isLink(text) && text.length >= 2) {
+    if (text.length >= 2) {
       state.searchTimer = setTimeout(() => search(text), SEARCH_DELAY);
+    }
+  }
+
+  function onKeyDown(event) {
+    const count = state.results.length;
+    if (event.key === "ArrowDown" && count) {
+      event.preventDefault();
+      setActive((state.active + 1) % count);
+    } else if (event.key === "ArrowUp" && count) {
+      event.preventDefault();
+      setActive((state.active - 1 + count) % count);
+    } else if (event.key === "Escape") {
+      if (!ui.panel.hidden) {
+        closeResults();
+      } else {
+        ui.query.value = "";
+        syncEntry();
+      }
     }
   }
 
@@ -949,19 +872,24 @@
       ui.query.focus();
       return;
     }
+
     if (!isLink(text)) {
-      search(text);
+      // Enter on a highlighted result downloads it, otherwise search right away
+      if (!ui.panel.hidden && state.active >= 0 && state.results.length) {
+        downloadResult(state.active);
+      } else {
+        search(text);
+      }
       return;
     }
 
     setBusy(ui.submit, true);
     try {
-      const job = await createJob(text);
+      await createJob(text);
       ui.query.value = "";
       syncEntry();
-      ui.results.replaceChildren();
-      selectJob(job.id);
-      toast("Added to Your Downloads");
+      closeResults();
+      toast("Added to Downloads");
     } catch (error) {
       toast(error.message, true);
     } finally {
@@ -1031,7 +959,7 @@
     for (const id of [...state.jobs.keys()]) {
       removeJob(id);
     }
-    state.booted = false;
+    closeResults();
     ui.app.hidden = true;
     ui.gate.hidden = false;
     ui.password.focus();
@@ -1041,6 +969,7 @@
     ui.gate.hidden = true;
     ui.app.hidden = false;
     ui.lock.hidden = !state.session.auth_required;
+    updateEmpty();
     connect();
     if (window.matchMedia("(pointer: fine)").matches) {
       ui.query.focus();
@@ -1105,7 +1034,7 @@
 
     const kept = session.retention_hours > 0 ? formatHours(session.retention_hours) : "";
     ui.colophon.textContent = kept
-      ? `spotDL ${session.version} · downloads are kept for ${kept}`
+      ? `spotDL ${session.version} · finished downloads are kept for ${kept}`
       : `spotDL ${session.version}`;
 
     if (session.auth_required && !session.authenticated) {
@@ -1117,41 +1046,33 @@
 
   ui.form.addEventListener("submit", submitEntry);
   ui.query.addEventListener("input", onInput);
+  ui.query.addEventListener("keydown", onKeyDown);
   ui.query.addEventListener("paste", (event) => {
     const pasted = (event.clipboardData && event.clipboardData.getData("text")) || "";
-    // Paste a link into the empty field and it starts right away
+    // Paste a link into the empty bar and it starts right away
     if (!ui.query.value.trim() && isLink(pasted)) {
       setTimeout(() => ui.form.requestSubmit(), 0);
-    }
-  });
-  ui.query.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      ui.query.value = "";
-      syncEntry();
-      leaveSearch();
     }
   });
   ui.clear.addEventListener("click", () => {
     ui.query.value = "";
     syncEntry();
-    leaveSearch();
+    closeResults();
     ui.query.focus();
   });
-  ui.home.addEventListener("click", () => {
-    ui.query.value = "";
-    syncEntry();
-    state.searchToken += 1;
-    goHome();
+  document.addEventListener("click", (event) => {
+    if (!ui.panel.hidden && !event.target.closest(".command")) {
+      closeResults();
+    }
   });
-  ui.searchBack.addEventListener("click", () => {
-    ui.query.value = "";
-    syncEntry();
-    leaveSearch();
-  });
-  ui.jobBack.addEventListener("click", goHome);
-  ui.start.addEventListener("click", () => {
-    window.scrollTo(0, 0);
-    ui.query.focus();
+  ui.empty.addEventListener("click", (event) => {
+    const example = event.target.closest("[data-example]");
+    if (example) {
+      ui.query.value = example.dataset.example;
+      syncEntry();
+      ui.query.focus();
+      search(example.dataset.example);
+    }
   });
   ui.filters.addEventListener("click", (event) => {
     const chip = event.target.closest(".chip");
@@ -1162,10 +1083,8 @@
     for (const other of ui.filters.querySelectorAll(".chip")) {
       other.setAttribute("aria-pressed", String(other.dataset.filter === state.filter));
     }
-    applyFilter();
+    updateEmpty();
   });
-  ui.jobRetry.addEventListener("click", retryJob);
-  ui.jobRemove.addEventListener("click", removeClicked);
   ui.format.addEventListener("change", () => {
     prefs.set("format", ui.format.value);
     syncQuality();

@@ -14,7 +14,7 @@ A self-hosted web app for [spotDL](https://github.com/spotDL/spotify-downloader)
 link or search for a song, watch it download, and get tagged audio files with album art and
 lyrics, one by one or as a ZIP.
 
-![spotDL Server: an album downloaded, in a dark library-style UI](docs/images/server-ui.webp)
+![spotDL Server: the command bar above a list of downloads with progress and Save buttons](docs/images/server-ui.webp)
 
 </div>
 
